@@ -173,10 +173,11 @@ app.post("/api/admin/login", async (req, res) => {
 
   const secret = process.env.SESSION_SECRET ?? "dev-change-me";
   const token = await computeAdminSessionToken(secret);
+  const crossSite = (process.env.CROSS_SITE_COOKIES ?? "").toLowerCase() === "true";
   res.cookie(ADMIN_COOKIE, token, {
     httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    sameSite: crossSite ? "none" : "lax",
+    secure: crossSite ? true : process.env.NODE_ENV === "production",
     path: "/",
     maxAge: 60 * 60 * 24 * 7 * 1000,
   });
