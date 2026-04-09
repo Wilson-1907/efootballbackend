@@ -170,12 +170,10 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
   if (db.settings.tournamentStopped) {
     return { db, changed: false };
   }
-  if (
-    now < new Date(db.settings.registrationEndsAt) ||
-    db.settings.fixturesGenerated
-  ) {
-    return { db, changed: false };
-  }
+
+  const ends = new Date(db.settings.registrationEndsAt);
+  const pastDeadline =
+    !Number.isNaN(ends.getTime()) && now.getTime() >= ends.getTime();
 
   const confirmed = db.players
     .filter((p) => p.status === "confirmed")
@@ -185,14 +183,34 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
     );
   const ids = confirmed.map((p) => p.id);
 
-  if (ids.length < 2) {
-    return {
-      db: {
-        ...db,
-        settings: { ...db.settings, fixturesGenerated: true },
-      },
-      changed: true,
+  let working = db;
+  let changed = false;
+
+  /**
+   * Older builds set fixturesGenerated=true when the deadline passed but fewer
+   * than two players were confirmed, which blocked real pairings after a second
+   * player was confirmed. Clear the flag so we can generate matches now.
+   */
+  if (
+    pastDeadline &&
+    working.settings.fixturesGenerated &&
+    working.matches.length === 0 &&
+    ids.length >= 2
+  ) {
+    working = {
+      ...working,
+      settings: { ...working.settings, fixturesGenerated: false },
     };
+    changed = true;
+  }
+
+  if (now < ends || working.settings.fixturesGenerated) {
+    return { db: working, changed };
+  }
+
+  if (ids.length < 2) {
+    /** Wait for more confirmations after deadline; do not set fixturesGenerated. */
+    return { db: working, changed };
   }
 
   const pairs = generateFairRoundRobin(ids);
@@ -227,9 +245,9 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
 
   return {
     db: {
-      ...db,
-      settings: { ...db.settings, fixturesGenerated: true },
-      matches: [...db.matches, ...matches],
+      ...working,
+      settings: { ...working.settings, fixturesGenerated: true },
+      matches: [...working.matches, ...matches],
     },
     changed: true,
   };
