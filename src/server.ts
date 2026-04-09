@@ -20,7 +20,10 @@ import {
   writeDb,
   type ResultSubmissionRecord,
 } from "./lib/db.js";
-import { findValidatedMatch } from "./lib/result-ocr.js";
+import {
+  findValidatedMatch,
+  parseScoresFromOcr,
+} from "./lib/result-ocr.js";
 import { deleteUploadFiles, wipeCompetitionData } from "./lib/reset-tournament.js";
 import {
   ensureFixturesGenerated,
@@ -667,6 +670,31 @@ app.post(
     }
 
     const now = new Date();
+    const parsedScore = parseScoresFromOcr(ocrText);
+
+    if (!parsedScore) {
+      const sub: ResultSubmissionRecord = {
+        id: createId(),
+        matchId: null,
+        submittedByEmail: email,
+        imagePath,
+        createdAt: now.toISOString(),
+        status: "rejected",
+        parsedHomeScore: null,
+        parsedAwayScore: null,
+        ocrText: ocrText.slice(0, 4000),
+        note: "Rejected: no readable score (e.g. 2-1) on screenshot.",
+      };
+      db = { ...db, submissions: [...db.submissions, sub] };
+      writeDb(db);
+      res.status(422).json({
+        error:
+          "Rejected — put the correct results. We could not read a final score on the image (use a clear screenshot showing something like 2-1 or 2:1).",
+        ocrPreview: ocrText.slice(0, 500),
+      });
+      return;
+    }
+
     const found = findValidatedMatch({ db, ocrText, now });
 
     if (!found) {
@@ -680,13 +708,13 @@ app.post(
         parsedHomeScore: null,
         parsedAwayScore: null,
         ocrText: ocrText.slice(0, 4000),
-        note: "No matching scheduled fixture: check Konami names, score format, and match time.",
+        note: "Rejected: screenshot does not match any scheduled fixture (names, score, or time window).",
       };
       db = { ...db, submissions: [...db.submissions, sub] };
       writeDb(db);
       res.status(422).json({
         error:
-          "Could not auto-validate: ensure the screenshot shows both Konami names as registered, the score (e.g. 2-1), and that this match was scheduled around this time.",
+          "Rejected — put the correct results. This image does not match any fixture on our schedule. Upload a screenshot of your actual scheduled match: both Konami names must match what you registered here, the score must be visible, and it must be within the allowed time around that fixture. Check Fixtures & scores on the site, then try again.",
         ocrPreview: ocrText.slice(0, 500),
       });
       return;
