@@ -20,6 +20,167 @@ export type StandingsRow = {
   points: number;
 };
 
+/** Shown when every scheduled match has a final score (tournament “finished”). */
+export type TournamentWrapUpPayload = {
+  champion: StandingsRow;
+  runnerUp: StandingsRow | null;
+  thirdPlace: StandingsRow | null;
+  stats: {
+    totalMatches: number;
+    totalGoals: number;
+    avgGoalsPerMatch: string;
+    draws: number;
+    biggestWin: {
+      margin: number;
+      scoreline: string;
+      winnerName: string;
+      loserName: string;
+    } | null;
+  };
+  goldenBoot: { playerName: string; goals: number } | null;
+  bestDefense: { playerName: string; goalsAgainst: number } | null;
+  /** Short narrative bullets for the public page */
+  analysis: string[];
+};
+
+function allMatchesHaveResults(matches: MatchRecord[]): boolean {
+  if (matches.length === 0) return false;
+  return matches.every(
+    (m) =>
+      m.status === "completed" &&
+      m.homeScore != null &&
+      m.awayScore != null,
+  );
+}
+
+export function buildTournamentWrapUp(
+  db: { matches: MatchRecord[]; players: PlayerRecord[] },
+  standings: StandingsRow[],
+): TournamentWrapUpPayload | null {
+  if (!allMatchesHaveResults(db.matches) || standings.length === 0) {
+    return null;
+  }
+
+  const champion = standings[0]!;
+  const runnerUp = standings[1] ?? null;
+  const thirdPlace = standings[2] ?? null;
+
+  const playerById = new Map(db.players.map((p) => [p.id, p]));
+
+  const totalGoals = db.matches.reduce(
+    (s, m) => s + (m.homeScore ?? 0) + (m.awayScore ?? 0),
+    0,
+  );
+  const n = db.matches.length;
+  const draws = db.matches.filter(
+    (m) => (m.homeScore ?? 0) === (m.awayScore ?? 0),
+  ).length;
+
+  let biggestWin: TournamentWrapUpPayload["stats"]["biggestWin"] = null;
+  for (const m of db.matches) {
+    const hs = m.homeScore ?? 0;
+    const as = m.awayScore ?? 0;
+    if (hs === as) continue;
+    const margin = Math.abs(hs - as);
+    const homeN =
+      playerById.get(m.homeId)?.konamiName ??
+      playerById.get(m.homeId)?.name ??
+      "Home";
+    const awayN =
+      playerById.get(m.awayId)?.konamiName ??
+      playerById.get(m.awayId)?.name ??
+      "Away";
+    const winnerName = hs > as ? homeN : awayN;
+    const loserName = hs > as ? awayN : homeN;
+    const wh = Math.max(hs, as);
+    const wl = Math.min(hs, as);
+    if (!biggestWin || margin > biggestWin.margin) {
+      biggestWin = {
+        margin,
+        scoreline: `${wh}-${wl}`,
+        winnerName,
+        loserName,
+      };
+    }
+  }
+
+  const playedRows = standings.filter((r) => r.played > 0);
+  let goldenBoot: TournamentWrapUpPayload["goldenBoot"] = null;
+  for (const r of playedRows) {
+    if (!goldenBoot || r.goalsFor > goldenBoot.goals) {
+      goldenBoot = { playerName: r.playerName, goals: r.goalsFor };
+    }
+  }
+
+  let bestDefense: TournamentWrapUpPayload["bestDefense"] = null;
+  for (const r of playedRows) {
+    if (!bestDefense || r.goalsAgainst < bestDefense.goalsAgainst) {
+      bestDefense = { playerName: r.playerName, goalsAgainst: r.goalsAgainst };
+    }
+  }
+
+  const avgGoalsPerMatch = (totalGoals / n).toFixed(2);
+
+  const analysis: string[] = [
+    `Every scheduled match has a recorded result — the tournament table is final.`,
+    `${champion.playerName} is champion with ${champion.points} points from ${champion.played} matches (${champion.won} wins, ${champion.drawn} draws, ${champion.lost} losses), ${champion.goalsFor} goals scored and ${champion.goalsAgainst} conceded.`,
+  ];
+  if (runnerUp) {
+    analysis.push(
+      `${runnerUp.playerName} finishes runner-up on ${runnerUp.points} points, goal difference ${runnerUp.goalDifference > 0 ? "+" : ""}${runnerUp.goalDifference}.`,
+    );
+  }
+  if (thirdPlace) {
+    analysis.push(
+      `${thirdPlace.playerName} takes third place with ${thirdPlace.points} points.`,
+    );
+  }
+  analysis.push(
+    `${totalGoals} goals were scored across ${n} matches (average ${avgGoalsPerMatch} goals per match).`,
+  );
+  if (draws > 0) {
+    analysis.push(
+      `${draws} match${draws === 1 ? "" : "es"} ended in a draw — tight margins in several fixtures.`,
+    );
+  }
+  if (biggestWin) {
+    analysis.push(
+      `Largest winning margin: ${biggestWin.winnerName} beat ${biggestWin.loserName} ${biggestWin.scoreline} (${biggestWin.margin}-goal margin).`,
+    );
+  }
+  if (goldenBoot && goldenBoot.goals > 0) {
+    analysis.push(
+      `Top scorer: ${goldenBoot.playerName} with ${goldenBoot.goals} goal${goldenBoot.goals === 1 ? "" : "s"}.`,
+    );
+  }
+  if (
+    bestDefense &&
+    playedRows.length > 1 &&
+    bestDefense.goalsAgainst ===
+      Math.min(...playedRows.map((r) => r.goalsAgainst))
+  ) {
+    analysis.push(
+      `Best defensive record: ${bestDefense.playerName} conceded only ${bestDefense.goalsAgainst} goal${bestDefense.goalsAgainst === 1 ? "" : "s"}.`,
+    );
+  }
+
+  return {
+    champion,
+    runnerUp,
+    thirdPlace,
+    stats: {
+      totalMatches: n,
+      totalGoals,
+      avgGoalsPerMatch,
+      draws,
+      biggestWin,
+    },
+    goldenBoot,
+    bestDefense,
+    analysis,
+  };
+}
+
 function randInt(maxExclusive: number): number {
   if (maxExclusive <= 0) return 0;
   // Prefer crypto for better randomness (Node 19+ has global crypto).
@@ -410,6 +571,8 @@ export async function getPublicTournamentState() {
     })),
   );
 
+  const tournamentWrapUp = buildTournamentWrapUp(db, standings);
+
   return {
     tournamentName: db.settings.tournamentName,
     tournamentStopped: db.settings.tournamentStopped,
@@ -427,5 +590,7 @@ export async function getPublicTournamentState() {
     standings,
     confirmedCount: confirmedPlayers.length,
     totalRegistered: db.players.length,
+    tournamentComplete: tournamentWrapUp !== null,
+    tournamentWrapUp,
   };
 }
