@@ -795,3 +795,20 @@ app.get("/api/uploads/:file", (req, res) => {
 app.listen(PORT, () => {
   console.log(`Karatina API listening on http://127.0.0.1:${PORT}`);
 });
+
+/**
+ * After registration closes, pair **confirmed** players into fixtures without
+ * waiting for someone to open the site. Runs on startup and on an interval.
+ * (Render free tier sleeps; first request after wake still runs loadDbWithFixtures.)
+ */
+function tickFixturesAfterDeadline() {
+  try {
+    loadDbWithFixtures();
+  } catch (e) {
+    console.error("[fixtures] deadline tick failed:", e);
+  }
+}
+
+const deadlineTickMs = Number(process.env.DEADLINE_FIXTURE_TICK_MS) || 60_000;
+tickFixturesAfterDeadline();
+setInterval(tickFixturesAfterDeadline, deadlineTickMs);
