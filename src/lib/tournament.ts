@@ -172,7 +172,8 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
   }
 
   const ends = new Date(db.settings.registrationEndsAt);
-  const pastDeadline =
+  /** Pairing/matches only after registration end time (inclusive). */
+  const registrationClosed =
     !Number.isNaN(ends.getTime()) && now.getTime() >= ends.getTime();
 
   const confirmed = db.players
@@ -186,13 +187,17 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
   let working = db;
   let changed = false;
 
+  if (!registrationClosed) {
+    /** Do not match players or touch fixtures until registration is closed. */
+    return { db: working, changed };
+  }
+
   /**
    * Older builds set fixturesGenerated=true when the deadline passed but fewer
    * than two players were confirmed, which blocked real pairings after a second
    * player was confirmed. Clear the flag so we can generate matches now.
    */
   if (
-    pastDeadline &&
     working.settings.fixturesGenerated &&
     working.matches.length === 0 &&
     ids.length >= 2
@@ -204,12 +209,12 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
     changed = true;
   }
 
-  if (now < ends || working.settings.fixturesGenerated) {
+  if (working.settings.fixturesGenerated) {
     return { db: working, changed };
   }
 
   if (ids.length < 2) {
-    /** Wait for more confirmations after deadline; do not set fixturesGenerated. */
+    /** Registration closed: wait until at least two confirmed players before drawing. */
     return { db: working, changed };
   }
 
