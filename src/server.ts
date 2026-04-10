@@ -53,6 +53,13 @@ const upload = multer({
   limits: { fileSize: 6 * 1024 * 1024 },
 });
 
+function buildCodeSendAt(scheduledAt: string | null): string | null {
+  if (!scheduledAt) return null;
+  const t = new Date(scheduledAt).getTime();
+  if (Number.isNaN(t)) return null;
+  return new Date(t - 8 * 60 * 1000).toISOString();
+}
+
 async function runOcr(buffer: Buffer): Promise<string> {
   const { createWorker } = await import("tesseract.js");
   const worker = await createWorker("eng");
@@ -402,6 +409,10 @@ app.post("/api/admin/matches/update", requireAdmin, (req, res) => {
         return;
       }
       match.scheduledAt = d.toISOString();
+    }
+    match.codeSendAt = buildCodeSendAt(match.scheduledAt);
+    if (!match.fixtureCode) {
+      match.fixtureCode = createId().slice(-6).toUpperCase();
     }
   }
 

@@ -200,6 +200,22 @@ function shuffleInPlace<T>(arr: T[]): void {
   }
 }
 
+function generateFixtureCode(): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let out = "";
+  for (let i = 0; i < 6; i++) {
+    out += chars[randInt(chars.length)]!;
+  }
+  return out;
+}
+
+function buildCodeSendAt(scheduledAt: string | null): string | null {
+  if (!scheduledAt) return null;
+  const t = new Date(scheduledAt).getTime();
+  if (Number.isNaN(t)) return null;
+  return new Date(t - 8 * 60 * 1000).toISOString();
+}
+
 type Pairing = { homeId: string; awayId: string; round: number };
 
 /**
@@ -323,6 +339,17 @@ function generateFairRoundRobin(idsInput: string[]): Pairing[] {
   return out;
 }
 
+function generateHomeAwayRoundRobin(idsInput: string[]): Pairing[] {
+  const firstLeg = generateFairRoundRobin(idsInput);
+  const maxRound = firstLeg.reduce((mx, p) => Math.max(mx, p.round), 0);
+  const secondLeg = firstLeg.map((p) => ({
+    homeId: p.awayId,
+    awayId: p.homeId,
+    round: p.round + maxRound,
+  }));
+  return [...firstLeg, ...secondLeg];
+}
+
 function isCompleted(m: MatchRecord): boolean {
   return m.status === "completed" && m.homeScore != null && m.awayScore != null;
 }
@@ -373,6 +400,19 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
   let working = db;
   let changed = false;
 
+  const normalizedMatches = working.matches.map((m) => {
+    const fixtureCode = m.fixtureCode ?? generateFixtureCode();
+    const codeSendAt = m.codeSendAt ?? buildCodeSendAt(m.scheduledAt);
+    if (fixtureCode !== m.fixtureCode || codeSendAt !== m.codeSendAt) {
+      changed = true;
+      return { ...m, fixtureCode, codeSendAt };
+    }
+    return m;
+  });
+  if (changed) {
+    working = { ...working, matches: normalizedMatches };
+  }
+
   if (!registrationClosed) {
     /** Do not match players or touch fixtures until registration is closed. */
     return { db: working, changed };
@@ -418,6 +458,8 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
           round: 1,
           phase: "knockout",
           stage,
+          fixtureCode: generateFixtureCode(),
+          codeSendAt: null,
           homeScore: null,
           awayScore: null,
           scheduledAt: null,
@@ -426,9 +468,7 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
       }
     } else {
       // League phase: each player gets roughly half the field as opponents.
-      const full = generateFairRoundRobin(ids);
-      const targetRounds = Math.max(1, Math.floor(ids.length / 2));
-      const leaguePairs = full.filter((p) => p.round <= targetRounds);
+      const leaguePairs = generateHomeAwayRoundRobin(ids);
       for (const p of leaguePairs) {
         firstRound.push({
           id: createId(),
@@ -437,6 +477,8 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
           round: p.round,
           phase: "league",
           stage: "league",
+          fixtureCode: generateFixtureCode(),
+          codeSendAt: null,
           homeScore: null,
           awayScore: null,
           scheduledAt: null,
@@ -487,6 +529,8 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
               round: baseRound,
               phase: "knockout" as const,
               stage: nextStage,
+              fixtureCode: generateFixtureCode(),
+              codeSendAt: null,
               homeScore: null,
               awayScore: null,
               scheduledAt: null,
@@ -545,6 +589,8 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
             round: baseRound,
             phase: "knockout" as const,
             stage: "round_of_32",
+            fixtureCode: generateFixtureCode(),
+            codeSendAt: null,
             homeScore: null,
             awayScore: null,
             scheduledAt: null,
@@ -598,6 +644,8 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
             round: baseRound,
             phase: "knockout" as const,
             stage,
+            fixtureCode: generateFixtureCode(),
+            codeSendAt: null,
             homeScore: null,
             awayScore: null,
             scheduledAt: null,
@@ -631,6 +679,8 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
               round: baseRound,
               phase: "knockout" as const,
               stage: "round_of_16",
+              fixtureCode: generateFixtureCode(),
+              codeSendAt: null,
               homeScore: null,
               awayScore: null,
               scheduledAt: null,
@@ -666,6 +716,8 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
             round: baseRound,
             phase: "knockout" as const,
             stage: nextStage,
+            fixtureCode: generateFixtureCode(),
+            codeSendAt: null,
             homeScore: null,
             awayScore: null,
             scheduledAt: null,
@@ -808,6 +860,7 @@ export async function getPublicTournamentState() {
 
   const matches = db.matches.map((m) => ({
     ...m,
+    codeSendAt: m.codeSendAt ?? buildCodeSendAt(m.scheduledAt),
     home: {
       id: m.homeId,
       name: playerById.get(m.homeId)?.konamiName ?? playerById.get(m.homeId)?.name ?? "?",

@@ -31,6 +31,8 @@ export type MatchRecord = {
   awayId: string;
   phase: "league" | "knockout";
   stage: string;
+  fixtureCode: string | null;
+  codeSendAt: string | null;
   homeScore: number | null;
   awayScore: number | null;
   scheduledAt: string | null;
@@ -179,6 +181,14 @@ function migrateDb(db: Database): Database {
           awayId: String(m.awayId ?? ""),
           phase: m.phase === "knockout" ? "knockout" : "league",
           stage: typeof m.stage === "string" ? m.stage : "league",
+          fixtureCode:
+            typeof m.fixtureCode === "string" || m.fixtureCode === null
+              ? m.fixtureCode
+              : null,
+          codeSendAt:
+            typeof m.codeSendAt === "string" || m.codeSendAt === null
+              ? m.codeSendAt
+              : null,
           homeScore: typeof m.homeScore === "number" ? m.homeScore : null,
           awayScore: typeof m.awayScore === "number" ? m.awayScore : null,
           scheduledAt:
