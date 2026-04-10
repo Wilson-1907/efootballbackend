@@ -136,7 +136,6 @@ app.post("/api/register", (req, res) => {
     email,
     phone,
     konamiName,
-    paid: false as const,
     status: "pending" as const,
     createdAt: new Date().toISOString(),
   };
@@ -146,8 +145,7 @@ app.post("/api/register", (req, res) => {
 
   res.json({
     ok: true,
-    message:
-      "Registration received. To be approved you must pay KSh 200 and then wait for verification.",
+    message: "Registration received. An admin will review and approve your entry.",
     player: { id: player.id, name: player.name, createdAt: player.createdAt },
   });
 });
@@ -322,6 +320,8 @@ app.post("/api/admin/matches/update", requireAdmin, (req, res) => {
     awayScore?: number | null;
     scheduledAt?: string | null;
     status?: string;
+    homeId?: string;
+    awayId?: string;
   };
   try {
     body = req.body ?? {};
@@ -330,7 +330,7 @@ app.post("/api/admin/matches/update", requireAdmin, (req, res) => {
     return;
   }
 
-  const { matchId, homeScore, awayScore, scheduledAt, status } = body;
+  const { matchId, homeScore, awayScore, scheduledAt, status, homeId, awayId } = body;
   if (!matchId) {
     res.status(400).json({ error: "matchId required" });
     return;
@@ -344,6 +344,30 @@ app.post("/api/admin/matches/update", requireAdmin, (req, res) => {
   }
 
   const match = { ...db.matches[idx]! };
+
+  if (homeId !== undefined || awayId !== undefined) {
+    const nextHomeId = homeId ?? match.homeId;
+    const nextAwayId = awayId ?? match.awayId;
+
+    if (!nextHomeId || !nextAwayId || nextHomeId === nextAwayId) {
+      res.status(400).json({ error: "Home and away players must be different." });
+      return;
+    }
+
+    const homePlayer = db.players.find((p) => p.id === nextHomeId);
+    const awayPlayer = db.players.find((p) => p.id === nextAwayId);
+    if (!homePlayer || !awayPlayer) {
+      res.status(400).json({ error: "Selected player was not found." });
+      return;
+    }
+    if (homePlayer.status !== "confirmed" || awayPlayer.status !== "confirmed") {
+      res.status(400).json({ error: "Only confirmed players can be assigned." });
+      return;
+    }
+
+    match.homeId = nextHomeId;
+    match.awayId = nextAwayId;
+  }
 
   if (scheduledAt !== undefined) {
     if (scheduledAt === null || scheduledAt === "") {
@@ -386,7 +410,7 @@ app.post("/api/admin/matches/update", requireAdmin, (req, res) => {
 });
 
 app.post("/api/admin/players/confirm", requireAdmin, (req, res) => {
-  let body: { playerId?: string; status?: string; paid?: boolean };
+  let body: { playerId?: string; status?: string };
   try {
     body = req.body ?? {};
   } catch {
@@ -409,17 +433,8 @@ app.post("/api/admin/players/confirm", requireAdmin, (req, res) => {
   }
   const players = [...db.players];
   const prev = players[idx]!;
-  const nextPaid = typeof body.paid === "boolean" ? body.paid : prev.paid;
-  if (status === "confirmed" && !nextPaid) {
-    res.status(400).json({
-      error:
-        "Player must be marked as paid (KSh 200) before confirmation.",
-    });
-    return;
-  }
   players[idx] = {
     ...prev,
-    paid: nextPaid,
     status: status as "pending" | "confirmed",
   };
   db = { ...db, players };

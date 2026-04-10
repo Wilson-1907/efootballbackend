@@ -7,7 +7,6 @@ export type PlayerRecord = {
   email: string;
   phone: string;
   konamiName: string;
-  paid: boolean;
   status: "pending" | "confirmed";
   createdAt: string;
 };
@@ -154,7 +153,6 @@ function migrateDb(db: Database): Database {
           email: String(p.email ?? ""),
           phone: String(p.phone ?? ""),
           konamiName: typeof p.konamiName === "string" ? p.konamiName : "",
-          paid: typeof p.paid === "boolean" ? p.paid : false,
           status: p.status === "confirmed" ? "confirmed" : "pending",
           createdAt: new Date(p.createdAt ?? Date.now()).toISOString(),
         }))
