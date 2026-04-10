@@ -402,7 +402,7 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
 
     const firstRound: MatchRecord[] = [];
 
-    if (ids.length <= 8) {
+    if (ids.length <= 2) {
       const stage =
         ids.length <= 2
           ? "final"
@@ -453,7 +453,7 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
     changed = true;
   }
 
-  // Knockout progression for leagues (>8 players): 9-24 playoff path.
+  // Knockout progression for league-based tournaments.
   const leagueMatches = working.matches.filter((m) => m.phase === "league");
   const knockout = working.matches.filter((m) => m.phase === "knockout");
   const allLeagueDone =
@@ -553,8 +553,61 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
         ],
       };
       changed = true;
+      return { db: working, changed };
     }
-    return { db: working, changed };
+  }
+
+  // For smaller leagues, seed a direct knockout bracket from standings.
+  if (
+    !hasStage("round_of_16") &&
+    !hasStage("quarter_final") &&
+    !hasStage("semi_final") &&
+    !hasStage("final")
+  ) {
+    const entrants = standings.map((s) => s.playerId);
+    const bracketSize =
+      entrants.length >= 16
+        ? 16
+        : entrants.length >= 8
+          ? 8
+          : entrants.length >= 4
+            ? 4
+            : entrants.length >= 2
+              ? 2
+              : 0;
+    if (bracketSize >= 2) {
+      const seeded = entrants.slice(0, bracketSize);
+      const pairs = knockoutPairs(seeded);
+      const stage =
+        bracketSize === 16
+          ? "round_of_16"
+          : bracketSize === 8
+            ? "quarter_final"
+            : bracketSize === 4
+              ? "semi_final"
+              : "final";
+      const baseRound = nextRound(working.matches);
+      working = {
+        ...working,
+        matches: [
+          ...working.matches,
+          ...pairs.map((p) => ({
+            id: createId(),
+            homeId: p.homeId,
+            awayId: p.awayId,
+            round: baseRound,
+            phase: "knockout" as const,
+            stage,
+            homeScore: null,
+            awayScore: null,
+            scheduledAt: null,
+            status: "scheduled" as const,
+          })),
+        ],
+      };
+      changed = true;
+      return { db: working, changed };
+    }
   }
 
   // Create round of 16 once round of 32 has decisive winners.
@@ -801,6 +854,8 @@ export async function getPublicTournamentState() {
     matchDurationMinutes: db.settings.matchDurationMinutes,
     breakMinutes: db.settings.breakMinutes,
     rulesMarkdown: db.settings.rulesMarkdown,
+    publicEventDateTime: db.settings.publicEventDateTime,
+    publicVenue: db.settings.publicVenue,
     matches,
     standings,
     confirmedCount: confirmedPlayers.length,

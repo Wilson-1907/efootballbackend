@@ -55,6 +55,8 @@ export function buildAdminOverview(db: Database) {
       matchDurationMinutes: db.settings.matchDurationMinutes,
       breakMinutes: db.settings.breakMinutes,
       rulesMarkdown: db.settings.rulesMarkdown,
+      publicEventDateTime: db.settings.publicEventDateTime,
+      publicVenue: db.settings.publicVenue,
       tournamentStopped: db.settings.tournamentStopped,
     },
     players: db.players

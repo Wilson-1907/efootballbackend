@@ -48,6 +48,8 @@ export type TournamentSettingsRecord = {
   matchDurationMinutes: number;
   breakMinutes: number;
   rulesMarkdown: string;
+  publicEventDateTime: string | null;
+  publicVenue: string;
   /** When true, public registration and result uploads are blocked. */
   tournamentStopped: boolean;
 };
@@ -98,6 +100,8 @@ function emptyDb(): Database {
       breakMinutes: 15,
       rulesMarkdown:
         "- 11-a-side (or as announced)\n- 3 points win, 1 draw, 0 loss\n- Fair play: respect referees and opponents\n- Bring your own kit; arrive 15 minutes early\n",
+      publicEventDateTime: null,
+      publicVenue: "",
       tournamentStopped: false,
     },
     players: [],
@@ -129,6 +133,12 @@ function migrateDb(db: Database): Database {
 
   const rulesMarkdown =
     typeof (s as any).rulesMarkdown === "string" ? (s as any).rulesMarkdown : "";
+  const publicEventDateTime =
+    typeof (s as any).publicEventDateTime === "string"
+      ? (s as any).publicEventDateTime
+      : null;
+  const publicVenue =
+    typeof (s as any).publicVenue === "string" ? (s as any).publicVenue : "";
 
   const tournamentStopped =
     typeof (s as any).tournamentStopped === "boolean"
@@ -146,6 +156,8 @@ function migrateDb(db: Database): Database {
       matchDurationMinutes,
       breakMinutes,
       rulesMarkdown,
+      publicEventDateTime,
+      publicVenue,
       tournamentStopped,
     },
     players: Array.isArray(db.players)

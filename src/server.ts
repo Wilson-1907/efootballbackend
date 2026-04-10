@@ -206,6 +206,8 @@ app.get("/api/admin/settings", requireAdmin, (_req, res) => {
     matchDurationMinutes: db.settings.matchDurationMinutes,
     breakMinutes: db.settings.breakMinutes,
     rulesMarkdown: db.settings.rulesMarkdown,
+    publicEventDateTime: db.settings.publicEventDateTime,
+    publicVenue: db.settings.publicVenue,
     fixturesGenerated: db.settings.fixturesGenerated,
     tournamentStopped: db.settings.tournamentStopped,
   });
@@ -221,6 +223,8 @@ app.patch("/api/admin/settings", requireAdmin, (req, res) => {
     matchDurationMinutes?: number;
     breakMinutes?: number;
     rulesMarkdown?: string;
+    publicEventDateTime?: string | null;
+    publicVenue?: string;
   };
   try {
     body = req.body ?? {};
@@ -279,6 +283,21 @@ app.patch("/api/admin/settings", requireAdmin, (req, res) => {
   if (typeof body.rulesMarkdown === "string") {
     settings.rulesMarkdown = body.rulesMarkdown.slice(0, 8000);
   }
+  if (body.publicEventDateTime !== undefined) {
+    if (body.publicEventDateTime === null || body.publicEventDateTime === "") {
+      settings.publicEventDateTime = null;
+    } else {
+      const d = new Date(body.publicEventDateTime);
+      if (Number.isNaN(d.getTime())) {
+        res.status(400).json({ error: "Invalid publicEventDateTime" });
+        return;
+      }
+      settings.publicEventDateTime = d.toISOString();
+    }
+  }
+  if (typeof body.publicVenue === "string") {
+    settings.publicVenue = body.publicVenue.trim().slice(0, 240);
+  }
 
   if (
     body.tournamentName === undefined &&
@@ -288,7 +307,9 @@ app.patch("/api/admin/settings", requireAdmin, (req, res) => {
     body.tournamentEndsAt === undefined &&
     body.matchDurationMinutes === undefined &&
     body.breakMinutes === undefined &&
-    body.rulesMarkdown === undefined
+    body.rulesMarkdown === undefined &&
+    body.publicEventDateTime === undefined &&
+    body.publicVenue === undefined
   ) {
     res.status(400).json({ error: "No valid fields" });
     return;
@@ -308,6 +329,8 @@ app.patch("/api/admin/settings", requireAdmin, (req, res) => {
     matchDurationMinutes: db.settings.matchDurationMinutes,
     breakMinutes: db.settings.breakMinutes,
     rulesMarkdown: db.settings.rulesMarkdown,
+    publicEventDateTime: db.settings.publicEventDateTime,
+    publicVenue: db.settings.publicVenue,
     fixturesGenerated: db.settings.fixturesGenerated,
     tournamentStopped: db.settings.tournamentStopped,
   });
