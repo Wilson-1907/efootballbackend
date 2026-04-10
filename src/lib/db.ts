@@ -7,6 +7,8 @@ export type PlayerRecord = {
   email: string;
   phone: string;
   konamiName: string;
+  passwordHash: string | null;
+  seasonReserved: boolean;
   status: "pending" | "confirmed";
   createdAt: string;
 };
@@ -33,6 +35,8 @@ export type MatchRecord = {
   stage: string;
   fixtureCode: string | null;
   codeSendAt: string | null;
+  homeCodeSubmittedAt: string | null;
+  awayCodeSubmittedAt: string | null;
   homeScore: number | null;
   awayScore: number | null;
   scheduledAt: string | null;
@@ -61,6 +65,13 @@ export type Database = {
   players: PlayerRecord[];
   matches: MatchRecord[];
   submissions: ResultSubmissionRecord[];
+  watcherBookings: {
+    id: string;
+    name: string;
+    email: string;
+    phone: string;
+    createdAt: string;
+  }[];
 };
 
 const DATA_DIR = join(process.cwd(), "data");
@@ -109,6 +120,7 @@ function emptyDb(): Database {
     players: [],
     matches: [],
     submissions: [],
+    watcherBookings: [],
   };
 }
 
@@ -169,6 +181,11 @@ function migrateDb(db: Database): Database {
           email: String(p.email ?? ""),
           phone: String(p.phone ?? ""),
           konamiName: typeof p.konamiName === "string" ? p.konamiName : "",
+          passwordHash:
+            typeof p.passwordHash === "string" || p.passwordHash === null
+              ? p.passwordHash
+              : null,
+          seasonReserved: Boolean(p.seasonReserved ?? false),
           status: p.status === "confirmed" ? "confirmed" : "pending",
           createdAt: new Date(p.createdAt ?? Date.now()).toISOString(),
         }))
@@ -188,6 +205,16 @@ function migrateDb(db: Database): Database {
           codeSendAt:
             typeof m.codeSendAt === "string" || m.codeSendAt === null
               ? m.codeSendAt
+              : null,
+          homeCodeSubmittedAt:
+            typeof m.homeCodeSubmittedAt === "string" ||
+            m.homeCodeSubmittedAt === null
+              ? m.homeCodeSubmittedAt
+              : null,
+          awayCodeSubmittedAt:
+            typeof m.awayCodeSubmittedAt === "string" ||
+            m.awayCodeSubmittedAt === null
+              ? m.awayCodeSubmittedAt
               : null,
           homeScore: typeof m.homeScore === "number" ? m.homeScore : null,
           awayScore: typeof m.awayScore === "number" ? m.awayScore : null,
@@ -215,6 +242,15 @@ function migrateDb(db: Database): Database {
             typeof sub.parsedAwayScore === "number" ? sub.parsedAwayScore : null,
           ocrText: typeof sub.ocrText === "string" ? sub.ocrText : null,
           note: typeof sub.note === "string" ? sub.note : null,
+        }))
+      : [],
+    watcherBookings: Array.isArray((db as any).watcherBookings)
+      ? (db as any).watcherBookings.map((b: any) => ({
+          id: String(b.id ?? ""),
+          name: String(b.name ?? ""),
+          email: String(b.email ?? ""),
+          phone: String(b.phone ?? ""),
+          createdAt: new Date(b.createdAt ?? Date.now()).toISOString(),
         }))
       : [],
   };

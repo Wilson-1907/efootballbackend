@@ -390,7 +390,7 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
     !Number.isNaN(ends.getTime()) && now.getTime() >= ends.getTime();
 
   const confirmed = db.players
-    .filter((p) => p.status === "confirmed")
+    .filter((p) => p.seasonReserved && p.status === "confirmed")
     .sort(
       (a, b) =>
         new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
@@ -403,9 +403,16 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
   const normalizedMatches = working.matches.map((m) => {
     const fixtureCode = m.fixtureCode ?? generateFixtureCode();
     const codeSendAt = m.codeSendAt ?? buildCodeSendAt(m.scheduledAt);
-    if (fixtureCode !== m.fixtureCode || codeSendAt !== m.codeSendAt) {
+    const homeCodeSubmittedAt = m.homeCodeSubmittedAt ?? null;
+    const awayCodeSubmittedAt = m.awayCodeSubmittedAt ?? null;
+    if (
+      fixtureCode !== m.fixtureCode ||
+      codeSendAt !== m.codeSendAt ||
+      homeCodeSubmittedAt !== m.homeCodeSubmittedAt ||
+      awayCodeSubmittedAt !== m.awayCodeSubmittedAt
+    ) {
       changed = true;
-      return { ...m, fixtureCode, codeSendAt };
+      return { ...m, fixtureCode, codeSendAt, homeCodeSubmittedAt, awayCodeSubmittedAt };
     }
     return m;
   });
@@ -460,6 +467,8 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
           stage,
           fixtureCode: generateFixtureCode(),
           codeSendAt: null,
+          homeCodeSubmittedAt: null,
+          awayCodeSubmittedAt: null,
           homeScore: null,
           awayScore: null,
           scheduledAt: null,
@@ -479,6 +488,8 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
           stage: "league",
           fixtureCode: generateFixtureCode(),
           codeSendAt: null,
+          homeCodeSubmittedAt: null,
+          awayCodeSubmittedAt: null,
           homeScore: null,
           awayScore: null,
           scheduledAt: null,
@@ -531,6 +542,8 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
               stage: nextStage,
               fixtureCode: generateFixtureCode(),
               codeSendAt: null,
+              homeCodeSubmittedAt: null,
+              awayCodeSubmittedAt: null,
               homeScore: null,
               awayScore: null,
               scheduledAt: null,
@@ -552,7 +565,7 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
   }
 
   const confirmedPlayers = working.players
-    .filter((p) => p.status === "confirmed")
+    .filter((p) => p.seasonReserved && p.status === "confirmed")
     .map((p) => ({ id: p.id, name: p.konamiName || p.name }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -591,6 +604,8 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
             stage: "round_of_32",
             fixtureCode: generateFixtureCode(),
             codeSendAt: null,
+            homeCodeSubmittedAt: null,
+            awayCodeSubmittedAt: null,
             homeScore: null,
             awayScore: null,
             scheduledAt: null,
@@ -646,6 +661,8 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
             stage,
             fixtureCode: generateFixtureCode(),
             codeSendAt: null,
+            homeCodeSubmittedAt: null,
+            awayCodeSubmittedAt: null,
             homeScore: null,
             awayScore: null,
             scheduledAt: null,
@@ -681,6 +698,8 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
               stage: "round_of_16",
               fixtureCode: generateFixtureCode(),
               codeSendAt: null,
+              homeCodeSubmittedAt: null,
+              awayCodeSubmittedAt: null,
               homeScore: null,
               awayScore: null,
               scheduledAt: null,
@@ -718,6 +737,8 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
             stage: nextStage,
             fixtureCode: generateFixtureCode(),
             codeSendAt: null,
+            homeCodeSubmittedAt: null,
+            awayCodeSubmittedAt: null,
             homeScore: null,
             awayScore: null,
             scheduledAt: null,
@@ -850,7 +871,7 @@ export async function getPublicTournamentState() {
   const registrationNotStarted = now < new Date(db.settings.registrationStartsAt);
 
   const confirmedPlayers = db.players
-    .filter((p) => p.status === "confirmed")
+    .filter((p) => p.seasonReserved && p.status === "confirmed")
     .map((p) => ({ id: p.id, name: p.konamiName || p.name }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -894,6 +915,18 @@ export async function getPublicTournamentState() {
 
   const tournamentWrapUp = buildTournamentWrapUp(db, standings);
 
+  const finalsDone = db.matches.some((m) => m.stage === "final" && m.status === "completed");
+  if (finalsDone && db.watcherBookings.length > 0) {
+    writeDb({ ...db, watcherBookings: [] });
+  }
+
+  const ev = db.settings.publicEventDateTime;
+  const finalsBookingOpen =
+    typeof ev === "string" &&
+    ev.length > 0 &&
+    !Number.isNaN(new Date(ev).getTime()) &&
+    (db.settings.publicVenue ?? "").trim().length > 0;
+
   return {
     tournamentName: db.settings.tournamentName,
     tournamentStopped: db.settings.tournamentStopped,
@@ -909,6 +942,7 @@ export async function getPublicTournamentState() {
     rulesMarkdown: db.settings.rulesMarkdown,
     publicEventDateTime: db.settings.publicEventDateTime,
     publicVenue: db.settings.publicVenue,
+    finalsBookingOpen,
     matches,
     standings,
     confirmedCount: confirmedPlayers.length,

@@ -21,7 +21,15 @@ import {
   type ResultSubmissionRecord,
 } from "./lib/db.js";
 import {
+  PLAYER_COOKIE,
+  createPlayerSessionToken,
+  hashPassword,
+  resolvePlayerFromToken,
+  verifyPassword,
+} from "./lib/player-auth.js";
+import {
   findValidatedMatch,
+  normalizeKonami,
   parseScoresFromOcr,
 } from "./lib/result-ocr.js";
 import { deleteUploadFiles, wipeCompetitionData } from "./lib/reset-tournament.js";
@@ -60,6 +68,39 @@ function buildCodeSendAt(scheduledAt: string | null): string | null {
   return new Date(t - 8 * 60 * 1000).toISOString();
 }
 
+function getCookie(header: string | undefined, name: string): string | undefined {
+  if (!header) return undefined;
+  for (const part of header.split(";")) {
+    const idx = part.indexOf("=");
+    if (idx === -1) continue;
+    const k = part.slice(0, idx).trim();
+    const v = part.slice(idx + 1).trim();
+    if (k === name) return decodeURIComponent(v);
+  }
+  return undefined;
+}
+
+function requirePlayerSession(req: express.Request) {
+  const db = readDb();
+  const secret = process.env.SESSION_SECRET ?? "dev-change-me";
+  const token = getCookie(req.headers.cookie, PLAYER_COOKIE);
+  const player = resolvePlayerFromToken(token, db.players, secret);
+  return { db, player };
+}
+
+function playersWithSameKonami(
+  players: { id: string; konamiName: string }[],
+  rawKonami: string,
+  excludePlayerId?: string,
+): { id: string; konamiName: string }[] {
+  const key = normalizeKonami(rawKonami.trim());
+  if (key.length < 2) return [];
+  return players.filter(
+    (p) =>
+      p.id !== excludePlayerId && normalizeKonami(p.konamiName || "") === key,
+  );
+}
+
 async function runOcr(buffer: Buffer): Promise<string> {
   const { createWorker } = await import("tesseract.js");
   const worker = await createWorker("eng");
@@ -81,6 +122,391 @@ app.get("/api/public/state", async (_req, res) => {
     console.error(e);
     res.status(500).json({ error: "Server error" });
   }
+});
+
+/** Minimal public data for the pre-login screen (no fixtures, standings, or player lists). */
+app.get("/api/public/meta", (_req, res) => {
+  try {
+    const db = readDb();
+    const now = new Date();
+    const registrationOpen =
+      now >= new Date(db.settings.registrationStartsAt) &&
+      now < new Date(db.settings.registrationEndsAt);
+    const registrationNotStarted = now < new Date(db.settings.registrationStartsAt);
+    const ev = db.settings.publicEventDateTime;
+    const finalsBookingOpen =
+      typeof ev === "string" &&
+      ev.length > 0 &&
+      !Number.isNaN(new Date(ev).getTime()) &&
+      (db.settings.publicVenue ?? "").trim().length > 0;
+    res.json({
+      tournamentName: db.settings.tournamentName,
+      tournamentStopped: db.settings.tournamentStopped,
+      registrationOpen,
+      registrationNotStarted,
+      registrationStartsAt: db.settings.registrationStartsAt,
+      registrationEndsAt: db.settings.registrationEndsAt,
+      finalsBookingOpen,
+      publicEventDateTime: db.settings.publicEventDateTime,
+      publicVenue: db.settings.publicVenue,
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.post("/api/player/account/create", (req, res) => {
+  let body: {
+    name?: string;
+    email?: string;
+    phone?: string;
+    konamiName?: string;
+    password?: string;
+    passwordConfirm?: string;
+  };
+  try {
+    body = req.body ?? {};
+  } catch {
+    res.status(400).json({ error: "Invalid JSON" });
+    return;
+  }
+
+  const name = body.name?.trim() ?? "";
+  const email = body.email?.trim().toLowerCase() ?? "";
+  const phone = body.phone?.trim() ?? "";
+  const konamiName = body.konamiName?.trim() ?? "";
+  const password = body.password ?? "";
+  const passwordConfirm = body.passwordConfirm ?? "";
+
+  if (!name || !email || !phone || !konamiName || password.length < 6) {
+    res.status(400).json({
+      error:
+        "Name, email, phone, Konami name, and password (min 6 characters) are required.",
+    });
+    return;
+  }
+  if (password !== passwordConfirm) {
+    res.status(400).json({ error: "Passwords do not match. Enter the same password twice." });
+    return;
+  }
+
+  let db = readDb();
+  const secret = process.env.SESSION_SECRET ?? "dev-change-me";
+  const existingIdx = db.players.findIndex((p) => p.email === email);
+  let player: (typeof db.players)[number];
+  if (existingIdx >= 0) {
+    const existing = db.players[existingIdx]!;
+    if (existing.passwordHash) {
+      res.status(409).json({
+        error: "Account already exists for this email. Please log in with your Konami name.",
+      });
+      return;
+    }
+    const clash = playersWithSameKonami(db.players, konamiName, existing.id);
+    if (clash.length > 0) {
+      res.status(409).json({
+        error: "Another player already uses this Konami name. Pick a different in-game name.",
+      });
+      return;
+    }
+    const players = [...db.players];
+    player = {
+      ...existing,
+      name,
+      phone,
+      konamiName,
+      passwordHash: hashPassword(password, secret),
+    };
+    players[existingIdx] = player;
+    db = { ...db, players };
+  } else {
+    if (playersWithSameKonami(db.players, konamiName).length > 0) {
+      res.status(409).json({
+        error: "Another player already uses this Konami name. Pick a different in-game name.",
+      });
+      return;
+    }
+    player = {
+      id: createId(),
+      name,
+      email,
+      phone,
+      konamiName,
+      passwordHash: hashPassword(password, secret),
+      seasonReserved: false,
+      status: "pending" as const,
+      createdAt: new Date().toISOString(),
+    };
+    db = { ...db, players: [...db.players, player] };
+  }
+  writeDb(db);
+
+  const token = createPlayerSessionToken(player, secret);
+  const crossSite = (process.env.CROSS_SITE_COOKIES ?? "").toLowerCase() === "true";
+  res.cookie(PLAYER_COOKIE, token, {
+    httpOnly: true,
+    sameSite: crossSite ? "none" : "lax",
+    secure: crossSite ? true : process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: 60 * 60 * 24 * 30 * 1000,
+  });
+
+  res.json({
+    ok: true,
+    message:
+      "Account created. Log in with your Konami name and password. When player registration is open, use “Save spot for this season”.",
+    player: { id: player.id, name: player.name, email: player.email },
+  });
+});
+
+app.post("/api/player/login", (req, res) => {
+  let body: { konamiName?: string; password?: string };
+  try {
+    body = req.body ?? {};
+  } catch {
+    res.status(400).json({ error: "Invalid JSON" });
+    return;
+  }
+  const konamiRaw = body.konamiName?.trim() ?? "";
+  const password = body.password ?? "";
+  if (!konamiRaw || !password) {
+    res.status(400).json({ error: "Konami name and password are required." });
+    return;
+  }
+
+  const db = readDb();
+  const key = normalizeKonami(konamiRaw);
+  if (key.length < 2) {
+    res.status(400).json({ error: "Enter a valid Konami / eFootball name." });
+    return;
+  }
+  const matches = db.players.filter(
+    (p) => normalizeKonami(p.konamiName || "") === key,
+  );
+  if (matches.length === 0) {
+    res.status(401).json({ error: "Invalid Konami name or password." });
+    return;
+  }
+  if (matches.length > 1) {
+    res.status(409).json({
+      error:
+        "Multiple accounts share this Konami name. Contact the organiser to fix duplicate names.",
+    });
+    return;
+  }
+  const player = matches[0]!;
+  const secret = process.env.SESSION_SECRET ?? "dev-change-me";
+  if (!verifyPassword(password, player.passwordHash, secret)) {
+    res.status(401).json({ error: "Invalid credentials." });
+    return;
+  }
+
+  const token = createPlayerSessionToken(player, secret);
+  const crossSite = (process.env.CROSS_SITE_COOKIES ?? "").toLowerCase() === "true";
+  res.cookie(PLAYER_COOKIE, token, {
+    httpOnly: true,
+    sameSite: crossSite ? "none" : "lax",
+    secure: crossSite ? true : process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: 60 * 60 * 24 * 30 * 1000,
+  });
+  res.json({ ok: true });
+});
+
+app.post("/api/player/logout", (_req, res) => {
+  res.cookie(PLAYER_COOKIE, "", {
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/",
+    maxAge: 0,
+  });
+  res.json({ ok: true });
+});
+
+app.get("/api/player/me", (req, res) => {
+  const { db, player } = requirePlayerSession(req);
+  if (!player) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  const playerById = new Map(db.players.map((p) => [p.id, p]));
+  const mySubmissions = db.submissions.filter((s) => s.submittedByEmail === player.email);
+  const fixtures = db.matches
+    .filter((m) => m.homeId === player.id || m.awayId === player.id)
+    .map((m) => ({
+      id: m.id,
+      stage: m.stage,
+      status: m.status,
+      scheduledAt: m.scheduledAt,
+      fixtureCode: m.fixtureCode,
+      codeSendAt: m.codeSendAt,
+      homeCodeSubmittedAt: m.homeCodeSubmittedAt,
+      awayCodeSubmittedAt: m.awayCodeSubmittedAt,
+      homeId: m.homeId,
+      awayId: m.awayId,
+      home: {
+        id: m.homeId,
+        name: playerById.get(m.homeId)?.konamiName || playerById.get(m.homeId)?.name || "?",
+      },
+      away: {
+        id: m.awayId,
+        name: playerById.get(m.awayId)?.konamiName || playerById.get(m.awayId)?.name || "?",
+      },
+      isHome: m.homeId === player.id,
+    }))
+    .sort((a, b) => {
+      const ta = a.scheduledAt ? new Date(a.scheduledAt).getTime() : Infinity;
+      const tb = b.scheduledAt ? new Date(b.scheduledAt).getTime() : Infinity;
+      return ta - tb;
+    });
+
+  res.json({
+    player: {
+      id: player.id,
+      name: player.name,
+      email: player.email,
+      phone: player.phone,
+      konamiName: player.konamiName,
+      status: player.status,
+      seasonReserved: player.seasonReserved,
+    },
+    fixtures,
+    progress: {
+      submitted: mySubmissions.length,
+      approved: mySubmissions.filter((s) => s.status === "approved").length,
+      rejected: mySubmissions.filter((s) => s.status === "rejected").length,
+    },
+  });
+});
+
+app.post("/api/player/reserve-spot", (req, res) => {
+  let db = readDb();
+  const secret = process.env.SESSION_SECRET ?? "dev-change-me";
+  const token = getCookie(req.headers.cookie, PLAYER_COOKIE);
+  const player = resolvePlayerFromToken(token, db.players, secret);
+  if (!player) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  const now = new Date();
+  if (db.settings.tournamentStopped) {
+    res.status(403).json({ error: "Tournament is stopped. Registration is closed." });
+    return;
+  }
+  if (now < new Date(db.settings.registrationStartsAt)) {
+    res.status(400).json({ error: "Registration has not opened yet." });
+    return;
+  }
+  if (now >= new Date(db.settings.registrationEndsAt)) {
+    res.status(400).json({ error: "Registration has closed." });
+    return;
+  }
+  const idx = db.players.findIndex((p) => p.id === player.id);
+  if (idx < 0) {
+    res.status(404).json({ error: "Player not found." });
+    return;
+  }
+  if (db.players[idx]!.seasonReserved) {
+    res.json({ ok: true, message: "Spot already reserved for this season." });
+    return;
+  }
+  const players = [...db.players];
+  players[idx] = { ...players[idx]!, seasonReserved: true, status: "pending" };
+  db = { ...db, players };
+  writeDb(db);
+  res.json({ ok: true, message: "Spot reserved. Waiting for admin approval." });
+});
+
+app.post("/api/watchers/book", (req, res) => {
+  let body: { name?: string; email?: string; phone?: string };
+  try {
+    body = req.body ?? {};
+  } catch {
+    res.status(400).json({ error: "Invalid JSON" });
+    return;
+  }
+  const name = body.name?.trim() ?? "";
+  const email = body.email?.trim().toLowerCase() ?? "";
+  const phone = body.phone?.trim() ?? "";
+  if (!name || !email || !phone) {
+    res.status(400).json({ error: "Name, email and phone are required." });
+    return;
+  }
+  const db = readDb();
+  if (db.settings.tournamentStopped) {
+    res.status(403).json({ error: "Tournament is not accepting bookings." });
+    return;
+  }
+  const eventIso = db.settings.publicEventDateTime;
+  const venue = db.settings.publicVenue?.trim() ?? "";
+  const eventOk = Boolean(eventIso && !Number.isNaN(new Date(eventIso).getTime()));
+  if (!eventOk || !venue) {
+    res.status(400).json({
+      error:
+        "Semifinal/final day is not published yet. The organiser must set public event date and venue before seats can be booked.",
+    });
+    return;
+  }
+  if (db.watcherBookings.some((b) => b.email === email)) {
+    res.json({ ok: true, message: "You already booked a finals seat." });
+    return;
+  }
+  const next = {
+    ...db,
+    watcherBookings: [
+      ...db.watcherBookings,
+      { id: createId(), name, email, phone, createdAt: new Date().toISOString() },
+    ],
+  };
+  writeDb(next);
+  res.json({ ok: true, message: "Seat booked for semi-finals and finals day." });
+});
+
+app.post("/api/player/matches/:matchId/submit-code", (req, res) => {
+  const { db, player } = requirePlayerSession(req);
+  if (!player) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  const matchId = req.params.matchId;
+  const rawCode = String(req.body?.code ?? "").trim().toUpperCase();
+  if (!matchId || !rawCode) {
+    res.status(400).json({ error: "Match and code are required." });
+    return;
+  }
+  const idx = db.matches.findIndex((m) => m.id === matchId);
+  if (idx === -1) {
+    res.status(404).json({ error: "Match not found." });
+    return;
+  }
+  const match = db.matches[idx]!;
+  if (match.homeId !== player.id && match.awayId !== player.id) {
+    res.status(403).json({ error: "You are not a player in this match." });
+    return;
+  }
+  if ((match.fixtureCode ?? "").toUpperCase() !== rawCode) {
+    res.status(400).json({ error: "Invalid match code." });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const updated = [...db.matches];
+  if (match.homeId === player.id) {
+    if (match.homeCodeSubmittedAt) {
+      res.json({ ok: true, message: "Your code was already recorded." });
+      return;
+    }
+    updated[idx] = { ...match, homeCodeSubmittedAt: now };
+  } else {
+    if (match.awayCodeSubmittedAt) {
+      res.json({ ok: true, message: "Your code was already recorded." });
+      return;
+    }
+    updated[idx] = { ...match, awayCodeSubmittedAt: now };
+  }
+  writeDb({ ...db, matches: updated });
+  res.json({ ok: true, message: "Code recorded on your account." });
 });
 
 app.get("/api/admin/overview", requireAdmin, (_req, res) => {
@@ -143,6 +569,8 @@ app.post("/api/register", (req, res) => {
     email,
     phone,
     konamiName,
+    passwordHash: null,
+    seasonReserved: true,
     status: "pending" as const,
     createdAt: new Date().toISOString(),
   };

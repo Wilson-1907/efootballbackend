@@ -23,8 +23,12 @@ export function wipeCompetitionData(db: Database): Database {
       fixturesGenerated: false,
       tournamentStopped: false,
     },
-    players: [],
+    players: db.players.map((p) => ({
+      ...p,
+      seasonReserved: false,
+    })),
     matches: [],
     submissions: [],
+    watcherBookings: [],
   };
 }

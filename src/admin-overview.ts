@@ -26,7 +26,7 @@ export function buildAdminOverview(db: Database) {
   });
 
   const confirmedPlayers = db.players
-    .filter((p) => p.status === "confirmed")
+    .filter((p) => p.seasonReserved && p.status === "confirmed")
     .map((p) => ({ id: p.id, name: p.konamiName || p.name }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -60,13 +60,26 @@ export function buildAdminOverview(db: Database) {
       tournamentStopped: db.settings.tournamentStopped,
     },
     players: db.players
+      .filter((p) => p.seasonReserved)
       .slice()
       .sort(
         (a, b) =>
           new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
       )
-      .map((p) => ({ ...p, createdAt: p.createdAt })),
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        email: p.email,
+        phone: p.phone,
+        konamiName: p.konamiName,
+        seasonReserved: p.seasonReserved,
+        status: p.status,
+        createdAt: p.createdAt,
+      })),
     matches,
     standings,
+    watcherBookings: db.watcherBookings
+      .slice()
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
   };
 }
