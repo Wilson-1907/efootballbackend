@@ -30,9 +30,12 @@ export function buildAdminOverview(db: Database) {
     .map((p) => ({ id: p.id, name: p.konamiName || p.name }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
+  const standingsSource = db.matches.some((m) => m.phase === "league")
+    ? db.matches.filter((m) => m.phase === "league")
+    : db.matches;
   const standings = computeStandingsFromMatches(
     confirmedPlayers,
-    db.matches.map((m) => ({
+    standingsSource.map((m) => ({
       status: m.status,
       homeId: m.homeId,
       awayId: m.awayId,

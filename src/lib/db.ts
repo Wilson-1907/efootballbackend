@@ -29,6 +29,8 @@ export type MatchRecord = {
   round: number;
   homeId: string;
   awayId: string;
+  phase: "league" | "knockout";
+  stage: string;
   homeScore: number | null;
   awayScore: number | null;
   scheduledAt: string | null;
@@ -157,7 +159,23 @@ function migrateDb(db: Database): Database {
           createdAt: new Date(p.createdAt ?? Date.now()).toISOString(),
         }))
       : [],
-    matches: Array.isArray(db.matches) ? db.matches : [],
+    matches: Array.isArray(db.matches)
+      ? db.matches.map((m: any) => ({
+          id: String(m.id ?? ""),
+          round: Number.isFinite(Number(m.round)) ? Number(m.round) : 1,
+          homeId: String(m.homeId ?? ""),
+          awayId: String(m.awayId ?? ""),
+          phase: m.phase === "knockout" ? "knockout" : "league",
+          stage: typeof m.stage === "string" ? m.stage : "league",
+          homeScore: typeof m.homeScore === "number" ? m.homeScore : null,
+          awayScore: typeof m.awayScore === "number" ? m.awayScore : null,
+          scheduledAt:
+            typeof m.scheduledAt === "string" || m.scheduledAt === null
+              ? m.scheduledAt
+              : null,
+          status: m.status === "completed" ? "completed" : "scheduled",
+        }))
+      : [],
     submissions: Array.isArray((db as any).submissions)
       ? (db as any).submissions.map((sub: any) => ({
           id: String(sub.id ?? ""),

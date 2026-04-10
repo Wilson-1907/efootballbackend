@@ -323,6 +323,31 @@ function generateFairRoundRobin(idsInput: string[]): Pairing[] {
   return out;
 }
 
+function isCompleted(m: MatchRecord): boolean {
+  return m.status === "completed" && m.homeScore != null && m.awayScore != null;
+}
+
+function winnerId(m: MatchRecord): string | null {
+  if (!isCompleted(m)) return null;
+  if ((m.homeScore ?? 0) === (m.awayScore ?? 0)) return null;
+  return (m.homeScore ?? 0) > (m.awayScore ?? 0) ? m.homeId : m.awayId;
+}
+
+function knockoutPairs(idsInput: string[]): { homeId: string; awayId: string }[] {
+  const ids = idsInput.slice();
+  shuffleInPlace(ids);
+  const out: { homeId: string; awayId: string }[] = [];
+  for (let i = 0; i + 1 < ids.length; i += 2) {
+    out.push({ homeId: ids[i]!, awayId: ids[i + 1]! });
+  }
+  return out;
+}
+
+function nextRound(matches: MatchRecord[]): number {
+  const maxRound = matches.reduce((mx, m) => Math.max(mx, m.round), 0);
+  return maxRound + 1;
+}
+
 export function ensureFixturesGenerated(db: DatabaseLike): {
   db: DatabaseLike;
   changed: boolean;
@@ -370,53 +395,240 @@ export function ensureFixturesGenerated(db: DatabaseLike): {
     changed = true;
   }
 
-  if (working.settings.fixturesGenerated) {
-    return { db: working, changed };
-  }
+  if (!working.settings.fixturesGenerated) {
+    if (ids.length < 2) {
+      return { db: working, changed };
+    }
 
-  if (ids.length < 2) {
-    /** Registration closed: wait until at least two confirmed players before drawing. */
-    return { db: working, changed };
-  }
+    const firstRound: MatchRecord[] = [];
 
-  const pairs = generateFairRoundRobin(ids);
-  const matchMinutes = Math.max(10, db.settings.matchDurationMinutes ?? 90);
-  const breakMinutes = Math.max(0, db.settings.breakMinutes ?? 15);
-  const slotMs = (matchMinutes + breakMinutes) * 60 * 1000;
+    if (ids.length <= 8) {
+      const stage =
+        ids.length <= 2
+          ? "final"
+          : ids.length <= 4
+            ? "semi_final"
+            : "quarter_final";
+      const pairs = knockoutPairs(ids);
+      for (const p of pairs) {
+        firstRound.push({
+          id: createId(),
+          homeId: p.homeId,
+          awayId: p.awayId,
+          round: 1,
+          phase: "knockout",
+          stage,
+          homeScore: null,
+          awayScore: null,
+          scheduledAt: null,
+          status: "scheduled",
+        });
+      }
+    } else {
+      // League phase: each player gets roughly half the field as opponents.
+      const full = generateFairRoundRobin(ids);
+      const targetRounds = Math.max(1, Math.floor(ids.length / 2));
+      const leaguePairs = full.filter((p) => p.round <= targetRounds);
+      for (const p of leaguePairs) {
+        firstRound.push({
+          id: createId(),
+          homeId: p.homeId,
+          awayId: p.awayId,
+          round: p.round,
+          phase: "league",
+          stage: "league",
+          homeScore: null,
+          awayScore: null,
+          scheduledAt: null,
+          status: "scheduled",
+        });
+      }
+    }
 
-  const tournamentStart = new Date(db.settings.tournamentStartsAt);
-  const tournamentEnd = new Date(db.settings.tournamentEndsAt);
-  const canSchedule =
-    !Number.isNaN(tournamentStart.getTime()) &&
-    !Number.isNaN(tournamentEnd.getTime()) &&
-    tournamentEnd.getTime() > tournamentStart.getTime() &&
-    slotMs > 0;
-
-  const matches: MatchRecord[] = pairs.map((p, idx) => {
-    const scheduledAt =
-      canSchedule && tournamentStart.getTime() + idx * slotMs < tournamentEnd.getTime()
-        ? new Date(tournamentStart.getTime() + idx * slotMs).toISOString()
-        : null;
-    return {
-      id: createId(),
-      homeId: p.homeId,
-      awayId: p.awayId,
-      round: p.round,
-      homeScore: null,
-      awayScore: null,
-      scheduledAt,
-      status: "scheduled",
-    };
-  });
-
-  return {
-    db: {
+    working = {
       ...working,
       settings: { ...working.settings, fixturesGenerated: true },
-      matches: [...working.matches, ...matches],
-    },
-    changed: true,
+      matches: [...working.matches, ...firstRound],
+    };
+    changed = true;
+  }
+
+  // Knockout progression for leagues (>8 players): 9-24 playoff path.
+  const leagueMatches = working.matches.filter((m) => m.phase === "league");
+  const knockout = working.matches.filter((m) => m.phase === "knockout");
+  const allLeagueDone =
+    leagueMatches.length > 0 && leagueMatches.every((m) => isCompleted(m));
+
+  if (leagueMatches.length === 0 && knockout.length > 0) {
+    const hasStage = (stage: string) => knockout.some((m) => m.stage === stage);
+    const stageMatches = (stage: string) => knockout.filter((m) => m.stage === stage);
+    const stageWinners = (stage: string) =>
+      stageMatches(stage).map(winnerId).filter((id): id is string => Boolean(id));
+
+    const buildNext = (
+      currentStage: string,
+      nextStage: string,
+      expectedCount: number,
+    ) => {
+      if (hasStage(nextStage)) return;
+      const current = stageMatches(currentStage);
+      const winners = stageWinners(currentStage);
+      if (current.length === expectedCount && winners.length === expectedCount) {
+        const pairs = knockoutPairs(winners);
+        const baseRound = nextRound(working.matches);
+        working = {
+          ...working,
+          matches: [
+            ...working.matches,
+            ...pairs.map((p) => ({
+              id: createId(),
+              homeId: p.homeId,
+              awayId: p.awayId,
+              round: baseRound,
+              phase: "knockout" as const,
+              stage: nextStage,
+              homeScore: null,
+              awayScore: null,
+              scheduledAt: null,
+              status: "scheduled" as const,
+            })),
+          ],
+        };
+        changed = true;
+      }
+    };
+
+    buildNext("quarter_final", "semi_final", 4);
+    buildNext("semi_final", "final", 2);
+    return { db: working, changed };
+  }
+
+  if (!allLeagueDone) {
+    return { db: working, changed };
+  }
+
+  const confirmedPlayers = working.players
+    .filter((p) => p.status === "confirmed")
+    .map((p) => ({ id: p.id, name: p.konamiName || p.name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const standings = computeStandingsFromMatches(
+    confirmedPlayers,
+    leagueMatches.map((m) => ({
+      status: m.status,
+      homeId: m.homeId,
+      awayId: m.awayId,
+      homeScore: m.homeScore,
+      awayScore: m.awayScore,
+    })),
+  );
+
+  const hasStage = (stage: string) => knockout.some((m) => m.stage === stage);
+  const stageMatches = (stage: string) => knockout.filter((m) => m.stage === stage);
+  const stageWinners = (stage: string) =>
+    stageMatches(stage).map(winnerId).filter((id): id is string => Boolean(id));
+
+  // If not yet created, create playoff for positions 9..24 (16 players).
+  if (!hasStage("round_of_32")) {
+    const pool = standings.slice(8, 24).map((s) => s.playerId);
+    if (pool.length >= 16) {
+      const pairs = knockoutPairs(pool.slice(0, 16));
+      const baseRound = nextRound(working.matches);
+      working = {
+        ...working,
+        matches: [
+          ...working.matches,
+          ...pairs.map((p) => ({
+            id: createId(),
+            homeId: p.homeId,
+            awayId: p.awayId,
+            round: baseRound,
+            phase: "knockout" as const,
+            stage: "round_of_32",
+            homeScore: null,
+            awayScore: null,
+            scheduledAt: null,
+            status: "scheduled" as const,
+          })),
+        ],
+      };
+      changed = true;
+    }
+    return { db: working, changed };
+  }
+
+  // Create round of 16 once round of 32 has decisive winners.
+  if (!hasStage("round_of_16")) {
+    const playoff = stageMatches("round_of_32");
+    const winners = stageWinners("round_of_32");
+    if (playoff.length > 0 && winners.length === playoff.length) {
+      const top8 = standings.slice(0, 8).map((s) => s.playerId);
+      const ids16 = [...top8, ...winners].slice(0, 16);
+      if (ids16.length === 16) {
+        const pairs = knockoutPairs(ids16);
+        const baseRound = nextRound(working.matches);
+        working = {
+          ...working,
+          matches: [
+            ...working.matches,
+            ...pairs.map((p) => ({
+              id: createId(),
+              homeId: p.homeId,
+              awayId: p.awayId,
+              round: baseRound,
+              phase: "knockout" as const,
+              stage: "round_of_16",
+              homeScore: null,
+              awayScore: null,
+              scheduledAt: null,
+              status: "scheduled" as const,
+            })),
+          ],
+        };
+        changed = true;
+      }
+    }
+    return { db: working, changed };
+  }
+
+  const buildNext = (
+    currentStage: string,
+    nextStage: string,
+    expectedCount: number,
+  ) => {
+    if (hasStage(nextStage)) return;
+    const current = stageMatches(currentStage);
+    const winners = stageWinners(currentStage);
+    if (current.length === expectedCount && winners.length === expectedCount) {
+      const pairs = knockoutPairs(winners);
+      const baseRound = nextRound(working.matches);
+      working = {
+        ...working,
+        matches: [
+          ...working.matches,
+          ...pairs.map((p) => ({
+            id: createId(),
+            homeId: p.homeId,
+            awayId: p.awayId,
+            round: baseRound,
+            phase: "knockout" as const,
+            stage: nextStage,
+            homeScore: null,
+            awayScore: null,
+            scheduledAt: null,
+            status: "scheduled" as const,
+          })),
+        ],
+      };
+      changed = true;
+    }
   };
+
+  buildNext("round_of_16", "quarter_final", 8);
+  buildNext("quarter_final", "semi_final", 4);
+  buildNext("semi_final", "final", 2);
+
+  return { db: working, changed };
 }
 
 type DatabaseLike = ReturnType<typeof readDb>;
@@ -560,9 +772,12 @@ export async function getPublicTournamentState() {
     return a.round - b.round;
   });
 
+  const standingsSource = db.matches.some((m) => m.phase === "league")
+    ? db.matches.filter((m) => m.phase === "league")
+    : db.matches;
   const standings = computeStandingsFromMatches(
     confirmedPlayers,
-    db.matches.map((m) => ({
+    standingsSource.map((m) => ({
       status: m.status,
       homeId: m.homeId,
       awayId: m.awayId,
